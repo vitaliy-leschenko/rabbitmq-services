@@ -42,33 +42,15 @@ jobs:
           --no-restore
           --output ./artifacts
 
-      - name: Get NuGet API token
-        id: nuget-auth
-        run: |
-          set -e
-          oidc_token=$(curl -sSfL \
-            -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" \
-            | jq -r '.value')
-          if [ -z "$oidc_token" ] || [ "$oidc_token" = "null" ]; then
-            echo "Failed to obtain OIDC token" >&2
-            exit 1
-          fi
-          api_key=$(curl -sSfL -X POST \
-            "https://www.nuget.org/api/v1/authentication/token" \
-            -H "Content-Type: application/json" \
-            -d "{\"EncodedJwt\": \"$oidc_token\"}" \
-            | jq -r '.token')
-          if [ -z "$api_key" ] || [ "$api_key" = "null" ]; then
-            echo "Failed to obtain NuGet API key from OIDC token exchange" >&2
-            exit 1
-          fi
-          echo "::add-mask::$api_key"
-          echo "api_key=$api_key" >> "$GITHUB_OUTPUT"
+      - name: NuGet login (OIDC → temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
 
       - name: Publish to NuGet.org
         run: >
           dotnet nuget push ./artifacts/*.nupkg
-          --api-key ${{ steps.nuget-auth.outputs.api_key }}
+          --api-key ${{steps.login.outputs.NUGET_API_KEY}}
           --source https://api.nuget.org/v3/index.json
           --skip-duplicate
