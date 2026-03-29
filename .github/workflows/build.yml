@@ -1,0 +1,56 @@
+name: Build and Publish NuGet
+
+on:
+  push:
+    tags:
+      - '*'
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            9.x
+            10.x
+
+      - name: Restore
+        run: dotnet restore src/RabbitMQ.sln
+
+      - name: Build
+        run: >
+          dotnet build src/RabbitMQ.Services/RabbitMQ.Services.csproj
+          -c Release
+          --no-restore
+
+      - name: Pack
+        run: >
+          dotnet pack src/RabbitMQ.Services/RabbitMQ.Services.csproj
+          -c Release
+          -p:PackageVersion=${{ github.ref_name }}
+          --no-build
+          --no-restore
+          --output ./artifacts
+
+      - name: NuGet login (OIDC → temp API key)
+        uses: NuGet/login@v1
+        id: login
+        with:
+          user: ${{ secrets.NUGET_USER }}
+
+      - name: Publish to NuGet.org
+        run: >
+          dotnet nuget push ./artifacts/*.nupkg
+          --api-key ${{steps.login.outputs.NUGET_API_KEY}}
+          --source https://api.nuget.org/v3/index.json
+          --skip-duplicate
