@@ -7,7 +7,16 @@
     <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
     <GeneratePackageOnBuild>True</GeneratePackageOnBuild>
     <IncludeSymbols>true</IncludeSymbols>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/vitaliy-leschenko/rabbitmq-services</RepositoryUrl>
   </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="RabbitMQ.Client" Version="7.2.1" />
