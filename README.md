@@ -81,7 +81,7 @@ services.AddConsumerHostedService<OrderCreatedMessage, OrderCreatedHandler>(conf
         "MaxRetryCount": 3
       },
       "OrderCreatedMessage": {
-        "Url": "rabbitmq://user:password@localhost/orders/order.created"
+        "Url": "amqp://user:password@localhost/orders/order.created"
       }
     }
   }
@@ -97,7 +97,7 @@ services.AddConsumerHostedService<OrderCreatedMessage, OrderCreatedHandler>(
     configuration,
     config =>
     {
-        config.Url = "rabbitmq://user:password@localhost/orders/order.created";
+        config.Url = "amqp://user:password@localhost/orders/order.created";
         config.MaxRetryCount = 5;
     });
 ```
@@ -181,7 +181,7 @@ public class OrderService(IAsyncMessageSender sender)
         // ... business logic ...
 
         await sender.SendMessageAsync(
-            "rabbitmq://user:password@localhost/orders/order.created",
+            "amqp://user:password@localhost/orders/order.created",
             new OrderCreatedMessage { OrderId = 42 });
 
         // Commit both business data and outbox message in one transaction
@@ -202,21 +202,21 @@ await deliveryService.SendMessagesAsync();
 
 ## RabbitMQ Endpoint URI Format
 
-Endpoints are specified as URIs with the `rabbitmq://` or `amqp://` scheme:
+Endpoints are specified as URIs with the `amqp://` or `amqp://` scheme:
 
 ```
-rabbitmq://[user:password@]host[:port]/[vhost/]queue[?param=value&...]
+amqp://[user:password@]host[:port]/[vhost/]queue[?param=value&...]
 ```
 
 ### Examples
 
 ```
-rabbitmq://localhost/myqueue
-rabbitmq://user:pass@localhost/myvhost/myqueue
-rabbitmq://localhost/myqueue?exchangetype=direct&route=my.routing.key
-rabbitmq://localhost/myqueue?consumers=4&prefetch=10
-rabbitmq://localhost/myqueue?temporary=true
-rabbitmq://localhost/myqueue?hosts=host1:5672,host2:5672
+amqp://localhost/myqueue
+amqp://user:pass@localhost/myvhost/myqueue
+amqp://localhost/myqueue?exchangetype=direct&route=my.routing.key
+amqp://localhost/myqueue?consumers=4&prefetch=10
+amqp://localhost/myqueue?temporary=true
+amqp://localhost/myqueue?hosts=host1:5672,host2:5672
 ```
 
 ### Query Parameters
