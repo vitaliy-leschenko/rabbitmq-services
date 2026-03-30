@@ -202,7 +202,7 @@ await deliveryService.SendMessagesAsync();
 
 ## RabbitMQ Endpoint URI Format
 
-Endpoints are specified as URIs with the `amqp://` or `amqp://` scheme:
+Endpoints are specified as URIs with the `amqp://` or `rabbitmq://` scheme:
 
 ```
 amqp://[user:password@]host[:port]/[vhost/]queue[?param=value&...]
