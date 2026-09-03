@@ -36,6 +36,9 @@ namespace RabbitMQ.Services.Tests.Services
             // Assert
             Assert.Equal(parentActivity.TraceId, child.TraceId);
             Assert.NotEqual(parentActivity.SpanId, child.SpanId);
+            Assert.Equal(parentActivity.SpanId, child.ParentSpanId);
+            Assert.True(child.Recorded);
+            Assert.Equal(Activity.Current, child);
         }
 
         [Fact]
@@ -53,6 +56,40 @@ namespace RabbitMQ.Services.Tests.Services
 
             // Assert
             Assert.NotNull(child);
+            Assert.True(child.Recorded);
+            Assert.Equal(Activity.Current, child);
+        }
+
+        [Fact]
+        public void StartNewChildActivity_UsesTheActivitySource_WhenListened()
+        {
+            // Arrange: a listener like the one a tracer installs, sampling everything from the source.
+            using var listener = new ActivityListener
+            {
+                ShouldListenTo = source => source.Name == ActivityBuilder.ActivitySourceName,
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllDataAndRecorded,
+            };
+            ActivitySource.AddActivityListener(listener);
+
+            var parentTraceId = ActivityTraceId.CreateRandom();
+            var parentSpanId = ActivitySpanId.CreateRandom();
+            var message = new TestMessage
+            {
+                TraceId = parentTraceId.ToString(),
+                SpanId = parentSpanId.ToString()
+            };
+
+            // Act
+            using var child = activityBuilder.StartNewChildActivity<ActivityBuilderTests>(message);
+
+            // Assert
+            Assert.Equal(ActivityBuilder.ActivitySourceName, child.Source.Name);
+            Assert.Equal(ActivityKind.Consumer, child.Kind);
+            Assert.Equal(parentTraceId, child.TraceId);
+            Assert.Equal(parentSpanId, child.ParentSpanId);
+            Assert.True(child.HasRemoteParent);
+            Assert.True(child.Recorded);
+            Assert.True(child.IsAllDataRequested);
             Assert.Equal(Activity.Current, child);
         }
     }

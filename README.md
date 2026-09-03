@@ -65,6 +65,33 @@ public class OrderCreatedHandler : BaseMessageHandler<OrderCreatedMessage>
 
 Override `HandleAsync(T message, int retryAttempt, CancellationToken token)` or the full overload with `delayAttempt` if you need retry/delay context.
 
+#### Tracing the Handler
+
+`BaseMessage` carries the `TraceId` and `SpanId` of the publisher's `Activity` (they are stored by the outbox
+together with the message). To continue that trace in the handler, open the consumer span through
+`IActivityBuilder`:
+
+```csharp
+public class OrderCreatedHandler(IActivityBuilder activityBuilder) : BaseMessageHandler<OrderCreatedMessage>
+{
+    public override async Task HandleAsync(OrderCreatedMessage message, CancellationToken token)
+    {
+        using var activity = activityBuilder.StartNewChildActivity<OrderCreatedHandler>(message);
+        // process the message: spans opened here (HttpClient, database, ...) belong to the publisher's trace
+    }
+}
+```
+
+The span comes from the `ActivitySource` named `ActivityBuilder.ActivitySourceName` (`"RabbitMQ.Services"`),
+so subscribe your tracer to it, for example with OpenTelemetry:
+
+```csharp
+services.AddOpenTelemetry().WithTracing(tracing => tracing.AddSource(ActivityBuilder.ActivitySourceName));
+```
+
+Without a listener the builder still starts a plain `Activity` (so `Activity.Current` is available for log
+correlation) and marks it recorded, so spans created under it by other instrumented libraries are sampled.
+
 #### Register the Consumer Hosted Service
 
 ```csharp
