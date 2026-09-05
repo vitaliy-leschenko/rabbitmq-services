@@ -33,7 +33,7 @@ namespace RabbitMQ.Services
                         .Where(t => t.Namespace == options.Value.Namespace)
                         .Where(t => t.MessageId > cursor)
                         .OrderBy(t => t.MessageId)
-                        .Take(42)
+                        .Take(options.Value.BatchSize)
                         .ToListAsync();
 
                     if (messages.Count == 0)
@@ -43,24 +43,25 @@ namespace RabbitMQ.Services
 
                     logger.LogInformation("Found {count} undelivered messages", messages.Count);
 
-                    foreach (var message in messages)
+                    foreach (var group in messages.GroupBy(t => new { t.Uri, t.BindQueue, t.ContentType }))
                     {
+                        var items = group.ToList();
+                        var (uri, bindQueue, contentType) = (group.Key.Uri, group.Key.BindQueue, group.Key.ContentType);
                         try
                         {
-                            logger.LogDebug("Send message to queue '{queue}'", message.Uri);
+                            var bodies = items.Select(t => t.Body).ToList();
+                            logger.LogDebug("Send messages to queue '{queue}'", uri);
 
-                            await SendMessageAsync(message.Uri, message.BindQueue, message.Body, message.ContentType);
+                            await SendMessagesAsync(uri, bindQueue, bodies, contentType);
                         }
                         catch (Exception ex)
                         {
-                            logger.LogWarning(ex,
-                                "Can't send message to {queue} message: {message}",
-                                message.Uri, Encoding.UTF8.GetString(message.Body));
+                            logger.LogWarning(ex, "Something went wrong while sending messages to queue '{queue}'", uri);
 
                             continue;
                         }
 
-                        db.Set<OutboxMessage>().Remove(message);
+                        db.Set<OutboxMessage>().RemoveRange(items);
                         await db.SaveChangesAsync();
                     }
 
@@ -73,11 +74,14 @@ namespace RabbitMQ.Services
             }
         }
 
-        private async Task SendMessageAsync(string uri, bool bindQueue, byte[] body, string contentType)
+        private async Task SendMessagesAsync(string uri, bool bindQueue, List<byte[]> bodies, string contentType)
         {
             var endpoint = endpointParser.Parse(uri);
             var connection = await builder.GetConnectionAsync(endpoint, options.Value.ConnectionName, ConnectionMode.Producer);
-            using var channel = await connection.CreateChannelAsync();
+            using var channel = await connection.CreateChannelAsync(
+                new CreateChannelOptions(
+                    publisherConfirmationsEnabled: true,
+                    publisherConfirmationTrackingEnabled: false));
 
             await channel.ExchangeDeclareAsync(
                 endpoint.Exchange.Name,
@@ -99,7 +103,7 @@ namespace RabbitMQ.Services
 
             var properties = new BasicProperties
             {
-                Headers = new Dictionary<string, object?> // mass transit needs this
+                Headers = new Dictionary<string, object?>
                 {
                     { "Content-Type", contentType }
                 },
@@ -107,7 +111,9 @@ namespace RabbitMQ.Services
                 Persistent = true,
                 ContentType = contentType
             };
-            await channel.BasicPublishAsync(endpoint.Exchange.Name, endpoint.Queue.Routing, true, properties, body);
+
+            var publishTasks = bodies.Select(body => channel.BasicPublishAsync(endpoint.Exchange.Name, endpoint.Queue.Routing, false, properties, body).AsTask()).ToList();
+            await Task.WhenAll(publishTasks);
         }
     }
 }
