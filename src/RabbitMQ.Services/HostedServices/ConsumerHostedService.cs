@@ -9,10 +9,12 @@ namespace RabbitMQ.Services.HostedServices
     public class ConsumerHostedService<T>(
         IAsyncMessageConsumer<T> consumer,
         IOptions<ConsumerConfiguration<T>> options,
+        IUriMasker uriMasker,
         ILogger<ConsumerHostedService<T>> logger) : IHostedService, IAsyncDisposable where T : class
     {
         private readonly IAsyncMessageConsumer<T> consumer = consumer;
         private readonly IOptions<ConsumerConfiguration<T>> options = options;
+        private readonly IUriMasker uriMasker = uriMasker;
         private readonly ILogger<ConsumerHostedService<T>> logger = logger;
 
         private CancellationTokenSource? executingCancellationTokenSource;
@@ -64,7 +66,8 @@ namespace RabbitMQ.Services.HostedServices
         protected virtual async Task ExecuteAsync(CancellationToken token)
         {
             await Task.Yield();
-            logger.LogInformation("Starting {name} message consumer {url}", typeof(T).Name, options.Value.Url);
+            var url = uriMasker.Mask(options.Value.Url);
+            logger.LogInformation("Starting {name} message consumer {url}", typeof(T).Name, url);
 
             Started = false;
             do
@@ -73,12 +76,12 @@ namespace RabbitMQ.Services.HostedServices
                 {
                     await consumer.StartAsync();
                     Started = true;
-                    logger.LogInformation("{name} message consumer {url} has been started", typeof(T).Name, options.Value.Url);
+                    logger.LogInformation("{name} message consumer {url} has been started", typeof(T).Name, url);
                 }
                 catch (Exception ex)
                 {
                     logger.LogCritical(ex, "Can't start {name} message consumer {url} with error: {message}",
-                        typeof(T).Name, options.Value.Url, ex.Message);
+                        typeof(T).Name, url, ex.Message);
 
                     await Task.Delay(1000, token);
                 }

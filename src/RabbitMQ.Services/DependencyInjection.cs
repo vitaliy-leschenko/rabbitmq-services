@@ -16,6 +16,7 @@ namespace RabbitMQ.Services
             services.TryAddTransient<IActivityBuilder, ActivityBuilder>();
             services.TryAddTransient<IActivityDataProvider, ActivityDataProvider>();
             services.TryAddSingleton<IDnsResolver, DnsResolver>();
+            services.TryAddSingleton<IUriMasker, UriMasker>();
             services.TryAddSingleton<IRabbitMQEndpointParser, RabbitMQEndpointParser>();
             services.TryAddSingleton<IConnectionFactoryBuilder, ConnectionFactoryBuilder>();
             services.TryAddSingleton<IConnectionBuilder, ConnectionBuilder>();

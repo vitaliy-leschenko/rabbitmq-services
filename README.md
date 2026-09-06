@@ -246,6 +246,8 @@ amqp://localhost/myqueue?temporary=true
 amqp://localhost/myqueue?hosts=host1:5672,host2:5672
 ```
 
+Credentials from the URI are masked when the endpoint is written to logs, e.g. `amqp://***:***@localhost/myvhost/myqueue`.
+
 ### Query Parameters
 
 | Parameter | Description |

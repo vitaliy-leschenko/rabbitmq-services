@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
+using RabbitMQ.Services.Implementations;
+using RabbitMQ.Services.Interfaces;
 using RabbitMQ.Services.Settings;
 using RabbitMQ.Services.Tests.Persistence;
 using Xunit;
@@ -51,6 +53,22 @@ namespace RabbitMQ.Services.Tests
             // Act
             Assert.Equal("ns", opt.Value.Namespace);
             Assert.Equal("cn", opt.Value.ConnectionName);
+        }
+
+        [Fact]
+        public void AddRabbitMQ_ShouldRegisterUriMasker()
+        {
+            // Arrange
+            var services = new ServiceCollection();
+            services.AddRabbitMQ();
+
+            var provider = services.BuildServiceProvider();
+
+            // Act
+            var masker = provider.GetRequiredService<IUriMasker>();
+
+            // Assert
+            Assert.IsType<UriMasker>(masker);
         }
     }
 }

@@ -14,10 +14,12 @@ namespace RabbitMQ.Services.Implementations
         IConnectionBuilder builder,
         IMessageHandler<T> processor,
         IOptions<ConsumerConfiguration<T>> options,
+        IUriMasker uriMasker,
         ILogger<T> logger) : IAsyncMessageConsumer<T> where T : class
     {
         private readonly IOptions<ConsumerConfiguration<T>> options = options;
         private readonly ILogger<T> logger = logger;
+        private readonly IUriMasker uriMasker = uriMasker;
         private readonly IRabbitMQEndpointParser endpointParser = endpointParser;
         private readonly IConnectionBuilder builder = builder;
         private readonly List<AdvancedConsumer<T>> consumers = [];
@@ -112,7 +114,7 @@ namespace RabbitMQ.Services.Implementations
             }
             catch (BrokerUnreachableException ex)
             {
-                logger.LogError(ex, "Can't connect to {url}", options.Value.Url);
+                logger.LogError(ex, "Can't connect to {url}", uriMasker.Mask(options.Value.Url));
                 throw;
             }
         }

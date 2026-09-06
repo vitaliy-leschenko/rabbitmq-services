@@ -14,12 +14,14 @@ namespace RabbitMQ.Services
         IConnectionBuilder builder,
         IRabbitMQEndpointParser endpointParser,
         IOptions<OutboxOptions> options,
+        IUriMasker uriMasker,
         ILogger<MessageDeliveryService> logger) : IMessageDeliveryService
     {
         private readonly IOutboxDbContext db = db;
         private readonly IConnectionBuilder builder = builder;
         private readonly IRabbitMQEndpointParser endpointParser = endpointParser;
         private readonly IOptions<OutboxOptions> options = options;
+        private readonly IUriMasker uriMasker = uriMasker;
         private readonly ILogger<MessageDeliveryService> logger = logger;
 
         public async Task SendMessagesAsync()
@@ -47,16 +49,17 @@ namespace RabbitMQ.Services
                     {
                         var items = group.ToList();
                         var (uri, bindQueue, contentType) = (group.Key.Uri, group.Key.BindQueue, group.Key.ContentType);
+                        var maskedUri = uriMasker.Mask(uri);
                         try
                         {
                             var bodies = items.Select(t => t.Body).ToList();
-                            logger.LogDebug("Send messages to queue '{queue}'", uri);
+                            logger.LogDebug("Send messages to queue '{queue}'", maskedUri);
 
                             await SendMessagesAsync(uri, bindQueue, bodies, contentType);
                         }
                         catch (Exception ex)
                         {
-                            logger.LogWarning(ex, "Something went wrong while sending messages to queue '{queue}'", uri);
+                            logger.LogWarning(ex, "Something went wrong while sending messages to queue '{queue}'", maskedUri);
 
                             continue;
                         }

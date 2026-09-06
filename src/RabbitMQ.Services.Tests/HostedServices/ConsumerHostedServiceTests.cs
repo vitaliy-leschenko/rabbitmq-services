@@ -1,6 +1,9 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Moq;
 using Moq.AutoMock;
 using RabbitMQ.Services.HostedServices;
+using RabbitMQ.Services.Implementations;
 using RabbitMQ.Services.Interfaces;
 using RabbitMQ.Services.Settings;
 using Xunit;
@@ -141,6 +144,70 @@ namespace RabbitMQ.Services.Tests.HostedServices
             Assert.True(service.ExecutingTask.IsCanceled);
 
             Assert.False(service.Started);
+        }
+
+        [Fact]
+        public async Task StartAsync_ShouldMaskUrlBeforeLogging()
+        {
+            // Arrange
+            const string Url = "amqp://user:secret@localhost/vhost/queue";
+
+            mocker.GetMock<IAsyncMessageConsumer<T>>()
+                .Setup(t => t.StartAsync())
+                .Verifiable();
+
+            mocker.GetMock<IOptions<ConsumerConfiguration<T>>>()
+                .SetupGet(t => t.Value)
+                .Returns(new ConsumerConfiguration<T> { Url = Url });
+
+            mocker.GetMock<IUriMasker>()
+                .Setup(t => t.Mask(Url))
+                .Returns("masked")
+                .Verifiable();
+
+            // Act
+            await service.StartAsync(TestContext.Current.CancellationToken);
+            await service.ExecutingTask!;
+
+            // Assert
+            mocker.GetMock<IUriMasker>().Verify(t => t.Mask(Url), Times.AtLeastOnce);
+        }
+
+        [Fact]
+        public async Task StartAsync_ShouldNotLogCredentials()
+        {
+            // Arrange
+            const string Url = "amqp://user:secret@localhost/vhost/queue";
+            const string MaskedUrl = "amqp://***:***@localhost/vhost/queue";
+
+            var mocker = new AutoMocker();
+            mocker.Use<IUriMasker>(new UriMasker());
+
+            mocker.GetMock<IAsyncMessageConsumer<T>>()
+                .Setup(t => t.StartAsync())
+                .Verifiable();
+
+            mocker.GetMock<IOptions<ConsumerConfiguration<T>>>()
+                .SetupGet(t => t.Value)
+                .Returns(new ConsumerConfiguration<T> { Url = Url });
+
+            var service = mocker.CreateInstance<ConsumerHostedService<T>>();
+
+            // Act
+            await service.StartAsync(TestContext.Current.CancellationToken);
+            await service.ExecutingTask!;
+
+            // Assert
+#pragma warning disable CA1873 // Avoid potentially expensive logging
+            mocker.GetMock<ILogger<ConsumerHostedService<T>>>()
+                .Verify(t => t.Log(LogLevel.Information, It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((state, _) => state.ToString()!.Contains(MaskedUrl)),
+                    It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Exactly(2));
+            mocker.GetMock<ILogger<ConsumerHostedService<T>>>()
+                .Verify(t => t.Log(It.IsAny<LogLevel>(), It.IsAny<EventId>(),
+                    It.Is<It.IsAnyType>((state, _) => state.ToString()!.Contains("secret")),
+                    It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Never);
+#pragma warning restore CA1873 // Avoid potentially expensive logging
         }
     }
 }

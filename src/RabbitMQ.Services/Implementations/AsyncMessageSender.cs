@@ -13,6 +13,7 @@ namespace RabbitMQ.Services.Implementations
         IOutboxDbContext context,
         IOptions<OutboxOptions> options,
         IActivityDataProvider activityDataProvider,
+        IUriMasker uriMasker,
         ILogger<AsyncMessageSender> logger) : IAsyncMessageSender
     {
         private readonly JsonSerializerOptions serializerOptions = new()
@@ -24,6 +25,7 @@ namespace RabbitMQ.Services.Implementations
         private readonly IOutboxDbContext context = context;
         private readonly IOptions<OutboxOptions> options = options;
         private readonly IActivityDataProvider activityDataProvider = activityDataProvider;
+        private readonly IUriMasker uriMasker = uriMasker;
         private readonly ILogger<AsyncMessageSender> logger = logger;
 
         public async Task SendMessageAsync<T>(string uri, T message, bool bindQueue) where T : BaseMessage
@@ -38,7 +40,7 @@ namespace RabbitMQ.Services.Implementations
 
         public async Task SendMessageAsync(string uri, string contentType, byte[] body, bool bindQueue)
         {
-            logger.LogDebug("Send message to queue '{queue}'", uri);
+            logger.LogDebug("Send message to queue '{queue}'", uriMasker.Mask(uri));
 
             await context.Set<OutboxMessage>().AddAsync(new OutboxMessage
             {

@@ -15,6 +15,7 @@ namespace RabbitMQ.Services.Tests.Services
 
         public ConnectionBuilderTests()
         {
+            mocker.Use<IUriMasker>(new UriMasker());
             builder = mocker.CreateInstance<ConnectionBuilder>();
         }
 
@@ -138,7 +139,7 @@ namespace RabbitMQ.Services.Tests.Services
 
             var endpoint = new RabbitMQEndpoint
             {
-                Uri = "amqp://localhost/vhost/queue"
+                Uri = "amqp://user:secret@localhost/vhost/queue"
             };
 
             var connection = new Mock<IConnection>();
@@ -161,7 +162,8 @@ namespace RabbitMQ.Services.Tests.Services
 
             // Assert
             var ex = await Assert.ThrowsAsync<InvalidOperationException>(() => act());
-            Assert.Equal($"Can't open connection to {endpoint.Uri}", ex.Message);
+            Assert.Equal("Can't open connection to amqp://***:***@localhost/vhost/queue", ex.Message);
+            Assert.DoesNotContain("secret", ex.Message);
         }
 
         [Fact]
