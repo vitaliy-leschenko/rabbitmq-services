@@ -464,6 +464,42 @@ namespace RabbitMQ.Services.Tests.Consumer
         }
 
         [Fact]
+        public async Task ConnectionShutdown_ShouldIgnoreAPreviousConnectionAsync()
+        {
+            // Arrange: the broker restart raises the channel shutdown first; the supervisor restarts
+            // the consumer on it, and the connection shutdown of the old connection arrives later.
+            var connection = SetupConnection();
+            await consumer.StartAsync();
+
+            var raised = 0;
+            consumer.ConnectionLost += (_, _) => raised++;
+
+            // Act
+            connection.Raise(t => t.ConnectionShutdownAsync += null, new Mock<IConnection>().Object, ShutdownArgs);
+
+            // Assert
+            Assert.Equal(0, raised);
+        }
+
+        [Fact]
+        public async Task ChannelShutdown_ShouldIgnoreAPreviousChannelAsync()
+        {
+            // Arrange
+            SetupConnection();
+            await consumer.StartAsync();
+
+            var raised = 0;
+            consumer.ConnectionLost += (_, _) => raised++;
+
+            // Act
+            var channel = mocker.GetMock<IChannel>();
+            channel.Raise(t => t.ChannelShutdownAsync += null, new Mock<IChannel>().Object, ShutdownArgs);
+
+            // Assert
+            Assert.Equal(0, raised);
+        }
+
+        [Fact]
         public async Task Start_ShouldCloseChannel_WhenSetupFailsAsync()
         {
             // Arrange

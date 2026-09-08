@@ -114,7 +114,11 @@ namespace RabbitMQ.Services.Implementations
 
         private Task OnConnectionShutdownAsync(object sender, ShutdownEventArgs e)
         {
-            if (stopping)
+            // The client raises the channel and the connection shutdown some milliseconds apart. By
+            // the time the second one arrives the supervisor may already have stopped us and begun a
+            // new start, so only the connection we hold right now may report a loss: a late event of
+            // the previous one would otherwise trigger a second, needless reconnect.
+            if (stopping || !ReferenceEquals(sender, connection))
             {
                 return Task.CompletedTask;
             }
@@ -130,7 +134,7 @@ namespace RabbitMQ.Services.Implementations
 
         private Task OnChannelShutdownAsync(object sender, ShutdownEventArgs e)
         {
-            if (stopping)
+            if (stopping || !ReferenceEquals(sender, channel))
             {
                 return Task.CompletedTask;
             }
