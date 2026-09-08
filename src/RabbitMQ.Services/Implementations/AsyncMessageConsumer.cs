@@ -25,44 +25,85 @@ namespace RabbitMQ.Services.Implementations
         private readonly List<AdvancedConsumer<T>> consumers = [];
         private readonly IMessageHandler<T> handler = processor;
 
+        // Start and stop never overlap: after an abandoned (timed out) start the supervisor calls
+        // StartAsync again on the same instance while the old attempt may still be unwinding.
+        private readonly SemaphoreSlim gate = new(1, 1);
+
         private IChannel? channel = null;
         private IConnection? connection = null;
-        private bool stopping = false;
+        private volatile bool stopping = false;
 
         public event EventHandler? ConnectionLost;
 
-        public async Task StartAsync()
+        public bool IsConnected
         {
-            stopping = false;
-
-            var endpoint = endpointParser.Parse(options.Value.Url);
-            var current = await GetConnectionAsync(endpoint);
-
-            channel = await SetupChannelAsync(endpoint, current);
-
-            connection = current;
-            connection.ConnectionShutdownAsync += OnConnectionShutdownAsync;
+            get
+            {
+                var currentConnection = connection;
+                var currentChannel = channel;
+                return currentConnection is { IsOpen: true } && currentChannel is { IsOpen: true };
+            }
         }
 
-        public async Task StopAsync()
+        public async Task StartAsync(CancellationToken token = default)
+        {
+            await gate.WaitAsync(token);
+            try
+            {
+                stopping = false;
+
+                var endpoint = endpointParser.Parse(options.Value.Url);
+                var current = await GetConnectionAsync(endpoint, token);
+
+                var created = await SetupChannelAsync(endpoint, current, token);
+
+                if (token.IsCancellationRequested)
+                {
+                    // The supervisor has already given up on this attempt: do not publish a channel
+                    // nobody will stop.
+                    consumers.Clear();
+                    await CloseChannelAsync(created, CancellationToken.None);
+                    token.ThrowIfCancellationRequested();
+                }
+
+                channel = created;
+                connection = current;
+                created.ChannelShutdownAsync += OnChannelShutdownAsync;
+                current.ConnectionShutdownAsync += OnConnectionShutdownAsync;
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
+        public async Task StopAsync(CancellationToken token = default)
         {
             stopping = true;
 
-            if (connection is IConnection current)
+            await gate.WaitAsync(token);
+            try
             {
-                current.ConnectionShutdownAsync -= OnConnectionShutdownAsync;
-                connection = null;
-            }
+                if (connection is IConnection current)
+                {
+                    current.ConnectionShutdownAsync -= OnConnectionShutdownAsync;
+                    connection = null;
+                }
 
-            if (channel != null)
+                if (channel is IChannel open)
+                {
+                    open.ChannelShutdownAsync -= OnChannelShutdownAsync;
+                    channel = null;
+
+                    await CloseChannelAsync(open, token);
+                }
+
+                consumers.Clear();
+            }
+            finally
             {
-                await Task.CompletedTask;
-
-                channel.Dispose();
-                channel = null;
+                gate.Release();
             }
-
-            consumers.Clear();
         }
 
         public async ValueTask DisposeAsync()
@@ -80,27 +121,43 @@ namespace RabbitMQ.Services.Implementations
 
             logger.LogWarning("ConnectionShutdown: {error}", e.ToString());
 
-            // Reconnecting here would run the retries on the client's event dispatcher and would
-            // hold the shared connection semaphore for as long as the broker stays down. Report the
+            // Reconnecting here would run the retries on the client's event dispatcher. Report the
             // loss instead and let ConsumerHostedService restart us with its own retry loop.
             ConnectionLost?.Invoke(this, EventArgs.Empty);
 
             return Task.CompletedTask;
         }
 
-        private async Task<IChannel> SetupChannelAsync(IRabbitMQEndpoint endpoint, IConnection connection)
+        private Task OnChannelShutdownAsync(object sender, ShutdownEventArgs e)
         {
-            var channel = await connection.CreateChannelAsync();
+            if (stopping)
+            {
+                return Task.CompletedTask;
+            }
+
+            // The broker closes a channel on its own for a protocol error (406, 404): the connection
+            // stays open, so without this the consumer would be dead with nobody knowing.
+            logger.LogWarning("ChannelShutdown: {error}", e.ToString());
+
+            ConnectionLost?.Invoke(this, EventArgs.Empty);
+
+            return Task.CompletedTask;
+        }
+
+        private async Task<IChannel> SetupChannelAsync(IRabbitMQEndpoint endpoint, IConnection connection, CancellationToken token)
+        {
+            var channel = await connection.CreateChannelAsync(cancellationToken: token);
             try
             {
-                await channel.BasicQosAsync(0, endpoint.PrefetchCount, false);
+                await channel.BasicQosAsync(0, endpoint.PrefetchCount, false, token);
 
                 string queue = await channel.QueueDeclareAsync(
                     endpoint.Queue.Name,
                     endpoint.Queue.Durable,
                     endpoint.Queue.Exclusive,
                     endpoint.Queue.AutoDelete,
-                    endpoint.Queue.Arguments.ToDictionary());
+                    endpoint.Queue.Arguments.ToDictionary(),
+                    cancellationToken: token);
 
                 if (options.Value.BindQueue)
                 {
@@ -109,15 +166,16 @@ namespace RabbitMQ.Services.Implementations
                         endpoint.Exchange.Type,
                         endpoint.Exchange.Durable,
                         endpoint.Exchange.AutoDelete,
-                        endpoint.Exchange.Arguments.ToDictionary());
+                        endpoint.Exchange.Arguments.ToDictionary(),
+                        cancellationToken: token);
 
-                    await channel.QueueBindAsync(queue, endpoint.Exchange.Name, endpoint.Queue.Routing);
+                    await channel.QueueBindAsync(queue, endpoint.Exchange.Name, endpoint.Queue.Routing, cancellationToken: token);
                 }
 
                 for (var t = 0; t < endpoint.ConsumersCount; t++)
                 {
                     var consumer = new AdvancedConsumer<T>(handler, endpoint, options, channel, logger);
-                    await channel.BasicConsumeAsync(endpoint.Queue.Name, false, consumer);
+                    await channel.BasicConsumeAsync(endpoint.Queue.Name, false, consumer, token);
                     consumers.Add(consumer);
                 }
 
@@ -126,16 +184,37 @@ namespace RabbitMQ.Services.Implementations
             catch
             {
                 // Without this a failed setup leaks a channel on every retry.
-                channel.Dispose();
+                consumers.Clear();
+                await CloseChannelAsync(channel, CancellationToken.None);
                 throw;
             }
         }
 
-        private async Task<IConnection> GetConnectionAsync(IRabbitMQEndpoint endpoint)
+        private async Task CloseChannelAsync(IChannel channel, CancellationToken token)
         {
             try
             {
-                return await builder.GetConnectionAsync(endpoint, options.Value.ConnectionName, ConnectionMode.Consumer, 0);
+                if (channel.IsOpen)
+                {
+                    // Abort rather than close: the channel's Dispose would do the same synchronously
+                    // and could wait on a broker that is already gone.
+                    await channel.CloseAsync(Constants.ReplySuccess, "Consumer stopped", true, token);
+                }
+
+                await channel.DisposeAsync();
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "Closing the channel of {url} failed: {message}",
+                    uriMasker.Mask(options.Value.Url), ex.Message);
+            }
+        }
+
+        private async Task<IConnection> GetConnectionAsync(IRabbitMQEndpoint endpoint, CancellationToken token)
+        {
+            try
+            {
+                return await builder.GetConnectionAsync(endpoint, options.Value.ConnectionName, ConnectionMode.Consumer, 0, token);
             }
             catch (BrokerUnreachableException ex)
             {

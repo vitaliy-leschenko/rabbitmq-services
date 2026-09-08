@@ -157,8 +157,20 @@ the consumer and connects again, retrying every second until the broker is back 
 shuts down. Nothing has to be configured, and a broker restart no longer requires restarting the
 application.
 
-`IAsyncMessageConsumer<T>` reports the drop through its `ConnectionLost` event and never recovers on
-its own. Handlers of that event run on the client's event dispatcher and must return immediately.
+Every step of that path is bounded, so a broker that accepts TCP but never answers cannot hang a
+consumer silently:
+
+- A connect attempt is cancelled after 60 seconds. Consumers that share a `ConnectionName` share
+  one attempt and wait for its result rather than for a lock, so one slow connect never queues the
+  others.
+- A start attempt (connect plus channel setup) is abandoned after 90 seconds and retried.
+- While connected, the supervisor checks `IsConnected` every 30 seconds and reconnects if the
+  connection or the channel is closed even though no event reported it.
+
+`IAsyncMessageConsumer<T>` reports the drop through its `ConnectionLost` event (raised for both a
+connection and a channel shutdown) and never recovers on its own. Handlers of that event run on the
+client's event dispatcher and must return immediately. `StartAsync` and `StopAsync` take a
+`CancellationToken`; `IsConnected` is a snapshot of the connection and channel state.
 
 ---
 

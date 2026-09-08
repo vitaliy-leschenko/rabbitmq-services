@@ -179,7 +179,7 @@ namespace RabbitMQ.Services.Tests
                 .ReturnsAsync(() => channel.Object);
 
             mocker.GetMock<IConnectionBuilder>()
-                .Setup(t => t.GetConnectionAsync(endpoint, ConnectionName, ConnectionMode.Producer, It.IsAny<int>()))
+                .Setup(t => t.GetConnectionAsync(endpoint, ConnectionName, ConnectionMode.Producer, It.IsAny<int>(), It.IsAny<CancellationToken>()))
                 .ReturnsAsync(() => connection.Object);
         }
     }
