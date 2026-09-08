@@ -2,6 +2,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Moq;
 using Moq.AutoMock;
+using RabbitMQ.Client.Exceptions;
 using RabbitMQ.Services.HostedServices;
 using RabbitMQ.Services.Implementations;
 using RabbitMQ.Services.Interfaces;
@@ -22,6 +23,17 @@ namespace RabbitMQ.Services.Tests.HostedServices
         public ConsumerHostedServiceTests()
         {
             service = mocker.CreateInstance<ConsumerHostedService<T>>();
+        }
+
+        private static async Task WaitForAsync(Func<bool> condition)
+        {
+            var deadline = DateTime.UtcNow.AddSeconds(10);
+            while (!condition() && DateTime.UtcNow < deadline)
+            {
+                await Task.Delay(10, TestContext.Current.CancellationToken);
+            }
+
+            Assert.True(condition());
         }
 
         [Fact]
@@ -107,7 +119,7 @@ namespace RabbitMQ.Services.Tests.HostedServices
                 .Returns(new ConsumerConfiguration<T>());
 
             await service.StartAsync(TestContext.Current.CancellationToken);
-            await Task.Delay(1500, TestContext.Current.CancellationToken);
+            await WaitForAsync(() => service.Started);
 
             // Act
             await service.StopAsync(TestContext.Current.CancellationToken);
@@ -167,10 +179,12 @@ namespace RabbitMQ.Services.Tests.HostedServices
 
             // Act
             await service.StartAsync(TestContext.Current.CancellationToken);
-            await service.ExecutingTask!;
+            await WaitForAsync(() => service.Started);
 
             // Assert
             mocker.GetMock<IUriMasker>().Verify(t => t.Mask(Url), Times.AtLeastOnce);
+
+            await service.StopAsync(TestContext.Current.CancellationToken);
         }
 
         [Fact]
@@ -195,7 +209,7 @@ namespace RabbitMQ.Services.Tests.HostedServices
 
             // Act
             await service.StartAsync(TestContext.Current.CancellationToken);
-            await service.ExecutingTask!;
+            await WaitForAsync(() => service.Started);
 
             // Assert
 #pragma warning disable CA1873 // Avoid potentially expensive logging
@@ -208,6 +222,71 @@ namespace RabbitMQ.Services.Tests.HostedServices
                     It.Is<It.IsAnyType>((state, _) => state.ToString()!.Contains("secret")),
                     It.IsAny<Exception?>(), It.IsAny<Func<It.IsAnyType, Exception?, string>>()), Times.Never);
 #pragma warning restore CA1873 // Avoid potentially expensive logging
+
+            await service.StopAsync(TestContext.Current.CancellationToken);
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_ShouldReconnect_WhenTheConnectionIsLost()
+        {
+            // Arrange
+            var starts = 0;
+            var consumer = mocker.GetMock<IAsyncMessageConsumer<T>>();
+            consumer.Setup(t => t.StartAsync())
+                .Returns(() =>
+                {
+                    Interlocked.Increment(ref starts);
+                    return Task.CompletedTask;
+                });
+
+            mocker.GetMock<IOptions<ConsumerConfiguration<T>>>()
+                .SetupGet(t => t.Value)
+                .Returns(new ConsumerConfiguration<T>());
+
+            await service.StartAsync(TestContext.Current.CancellationToken);
+            await WaitForAsync(() => service.Started);
+
+            // Act
+            consumer.Raise(t => t.ConnectionLost += null, EventArgs.Empty);
+
+            // Assert
+            await WaitForAsync(() => Volatile.Read(ref starts) == 2 && service.Started);
+            consumer.Verify(t => t.StopAsync(), Times.Once);
+
+            await service.StopAsync(TestContext.Current.CancellationToken);
+        }
+
+        [Fact]
+        public async Task ExecuteAsync_ShouldKeepRetrying_WhenTheBrokerIsStillDownAfterTheLoss()
+        {
+            // Arrange
+            var starts = 0;
+            var consumer = mocker.GetMock<IAsyncMessageConsumer<T>>();
+            consumer.Setup(t => t.StartAsync())
+                .Returns(() =>
+                {
+                    // The first start succeeds; the reconnect right after the loss fails, because the
+                    // broker is still coming up. That second failure used to kill the consumer for good.
+                    var attempt = Interlocked.Increment(ref starts);
+                    return attempt == 2
+                        ? Task.FromException(new BrokerUnreachableException(new Exception()))
+                        : Task.CompletedTask;
+                });
+
+            mocker.GetMock<IOptions<ConsumerConfiguration<T>>>()
+                .SetupGet(t => t.Value)
+                .Returns(new ConsumerConfiguration<T>());
+
+            await service.StartAsync(TestContext.Current.CancellationToken);
+            await WaitForAsync(() => service.Started);
+
+            // Act
+            consumer.Raise(t => t.ConnectionLost += null, EventArgs.Empty);
+
+            // Assert
+            await WaitForAsync(() => Volatile.Read(ref starts) >= 3 && service.Started);
+
+            await service.StopAsync(TestContext.Current.CancellationToken);
         }
     }
 }

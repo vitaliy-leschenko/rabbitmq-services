@@ -26,23 +26,34 @@ namespace RabbitMQ.Services.Implementations
         private readonly IMessageHandler<T> handler = processor;
 
         private IChannel? channel = null;
+        private IConnection? connection = null;
         private bool stopping = false;
+
+        public event EventHandler? ConnectionLost;
 
         public async Task StartAsync()
         {
             stopping = false;
 
             var endpoint = endpointParser.Parse(options.Value.Url);
-            var connection = await GetConnectionAsync(endpoint);
+            var current = await GetConnectionAsync(endpoint);
 
-            channel = await SetupChannelAsync(endpoint, connection);
+            channel = await SetupChannelAsync(endpoint, current);
 
+            connection = current;
             connection.ConnectionShutdownAsync += OnConnectionShutdownAsync;
         }
 
         public async Task StopAsync()
         {
             stopping = true;
+
+            if (connection is IConnection current)
+            {
+                current.ConnectionShutdownAsync -= OnConnectionShutdownAsync;
+                connection = null;
+            }
+
             if (channel != null)
             {
                 await Task.CompletedTask;
@@ -60,50 +71,64 @@ namespace RabbitMQ.Services.Implementations
             await StopAsync();
         }
 
-        private async Task OnConnectionShutdownAsync(object sender, ShutdownEventArgs e)
+        private Task OnConnectionShutdownAsync(object sender, ShutdownEventArgs e)
         {
             if (stopping)
             {
-                return;
+                return Task.CompletedTask;
             }
 
             logger.LogWarning("ConnectionShutdown: {error}", e.ToString());
-            await StopAsync();
-            await StartAsync();
+
+            // Reconnecting here would run the retries on the client's event dispatcher and would
+            // hold the shared connection semaphore for as long as the broker stays down. Report the
+            // loss instead and let ConsumerHostedService restart us with its own retry loop.
+            ConnectionLost?.Invoke(this, EventArgs.Empty);
+
+            return Task.CompletedTask;
         }
 
         private async Task<IChannel> SetupChannelAsync(IRabbitMQEndpoint endpoint, IConnection connection)
         {
             var channel = await connection.CreateChannelAsync();
-            await channel.BasicQosAsync(0, endpoint.PrefetchCount, false);
-
-            string queue = await channel.QueueDeclareAsync(
-                endpoint.Queue.Name,
-                endpoint.Queue.Durable,
-                endpoint.Queue.Exclusive,
-                endpoint.Queue.AutoDelete,
-                endpoint.Queue.Arguments.ToDictionary());
-
-            if (options.Value.BindQueue)
+            try
             {
-                await channel.ExchangeDeclareAsync(
-                    endpoint.Exchange.Name,
-                    endpoint.Exchange.Type,
-                    endpoint.Exchange.Durable,
-                    endpoint.Exchange.AutoDelete,
-                    endpoint.Exchange.Arguments.ToDictionary());
+                await channel.BasicQosAsync(0, endpoint.PrefetchCount, false);
 
-                await channel.QueueBindAsync(queue, endpoint.Exchange.Name, endpoint.Queue.Routing);
+                string queue = await channel.QueueDeclareAsync(
+                    endpoint.Queue.Name,
+                    endpoint.Queue.Durable,
+                    endpoint.Queue.Exclusive,
+                    endpoint.Queue.AutoDelete,
+                    endpoint.Queue.Arguments.ToDictionary());
+
+                if (options.Value.BindQueue)
+                {
+                    await channel.ExchangeDeclareAsync(
+                        endpoint.Exchange.Name,
+                        endpoint.Exchange.Type,
+                        endpoint.Exchange.Durable,
+                        endpoint.Exchange.AutoDelete,
+                        endpoint.Exchange.Arguments.ToDictionary());
+
+                    await channel.QueueBindAsync(queue, endpoint.Exchange.Name, endpoint.Queue.Routing);
+                }
+
+                for (var t = 0; t < endpoint.ConsumersCount; t++)
+                {
+                    var consumer = new AdvancedConsumer<T>(handler, endpoint, options, channel, logger);
+                    await channel.BasicConsumeAsync(endpoint.Queue.Name, false, consumer);
+                    consumers.Add(consumer);
+                }
+
+                return channel;
             }
-
-            for (var t = 0; t < endpoint.ConsumersCount; t++)
+            catch
             {
-                var consumer = new AdvancedConsumer<T>(handler, endpoint, options, channel, logger);
-                await channel.BasicConsumeAsync(endpoint.Queue.Name, false, consumer);
-                consumers.Add(consumer);
+                // Without this a failed setup leaks a channel on every retry.
+                channel.Dispose();
+                throw;
             }
-
-            return channel;
         }
 
         private async Task<IConnection> GetConnectionAsync(IRabbitMQEndpoint endpoint)

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Options;
 using Moq;
 using Moq.AutoMock;
 using RabbitMQ.Client;
+using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
 using RabbitMQ.Services.Configurations;
 using RabbitMQ.Services.Implementations;
@@ -259,6 +260,81 @@ namespace RabbitMQ.Services.Tests.Consumer
             await consumer.DisposeAsync();
             await consumer.DisposeAsync();
             await consumer.DisposeAsync();
+        }
+
+        [Fact]
+        public async Task ConnectionShutdown_ShouldRaiseConnectionLostAsync()
+        {
+            // Arrange
+            var connection = SetupConnection();
+            await consumer.StartAsync();
+
+            var raised = 0;
+            consumer.ConnectionLost += (_, _) => raised++;
+
+            // Act
+            connection.Raise(t => t.ConnectionShutdownAsync += null, connection.Object, ShutdownArgs);
+
+            // Assert
+            Assert.Equal(1, raised);
+        }
+
+        [Fact]
+        public async Task ConnectionShutdown_ShouldNotRaiseConnectionLost_AfterStopAsync()
+        {
+            // Arrange
+            var connection = SetupConnection();
+            await consumer.StartAsync();
+
+            var raised = 0;
+            consumer.ConnectionLost += (_, _) => raised++;
+
+            // Act
+            await consumer.StopAsync();
+            connection.Raise(t => t.ConnectionShutdownAsync += null, connection.Object, ShutdownArgs);
+
+            // Assert
+            Assert.Equal(0, raised);
+
+            connection.VerifyRemove(
+                t => t.ConnectionShutdownAsync -= It.IsAny<AsyncEventHandler<ShutdownEventArgs>>(),
+                Times.Once);
+        }
+
+        private static ShutdownEventArgs ShutdownArgs =>
+            new(ShutdownInitiator.Peer, Constants.ConnectionForced, "connection closed");
+
+        private Mock<IConnection> SetupConnection()
+        {
+            var endpoint = new RabbitMQEndpoint
+            {
+                ConsumersCount = 1
+            };
+
+            var channel = mocker.GetMock<IChannel>();
+            channel.Setup(t => t.QueueDeclareAsync(
+                endpoint.Queue.Name,
+                endpoint.Queue.Durable,
+                endpoint.Queue.Exclusive,
+                endpoint.Queue.AutoDelete,
+                It.IsAny<Dictionary<string, object?>>(),
+                false, false,
+                It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => new QueueDeclareOk(endpoint.Queue.Name, 0, 0));
+
+            var connection = mocker.GetMock<IConnection>();
+            connection.Setup(t => t.CreateChannelAsync(It.IsAny<CreateChannelOptions>(), It.IsAny<CancellationToken>()))
+                .ReturnsAsync(() => channel.Object);
+
+            mocker.GetMock<IRabbitMQEndpointParser>()
+                .Setup(t => t.Parse(It.IsAny<string>()))
+                .Returns(() => endpoint);
+
+            mocker.GetMock<IConnectionBuilder>()
+                .Setup(t => t.GetConnectionAsync(It.IsAny<IRabbitMQEndpoint>(), ConnectionName, ConnectionMode.Consumer, It.IsAny<int>()))
+                .ReturnsAsync(() => connection.Object);
+
+            return connection;
         }
     }
 }

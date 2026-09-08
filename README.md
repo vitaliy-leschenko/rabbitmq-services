@@ -6,6 +6,7 @@ A .NET library that simplifies integrating RabbitMQ into ASP.NET Core applicatio
 
 - URI-based RabbitMQ endpoint configuration
 - Consumer hosted service with automatic retry and delay support
+- Automatic reconnection of consumers after a broker restart
 - Outbox pattern for reliable message delivery via Entity Framework Core
 - DNS-based cluster resolution
 - OpenTelemetry activity propagation
@@ -147,6 +148,17 @@ Throw `DelayMessageException` from a handler to reschedule the message:
 ```csharp
 throw new DelayMessageException(TimeSpan.FromSeconds(30), "Not ready yet");
 ```
+
+#### Connection Recovery
+
+The client's built-in automatic recovery is switched off; `ConsumerHostedService` supervises the
+consumer instead. It connects with retries on startup, and when the broker connection drops it stops
+the consumer and connects again, retrying every second until the broker is back or the application
+shuts down. Nothing has to be configured, and a broker restart no longer requires restarting the
+application.
+
+`IAsyncMessageConsumer<T>` reports the drop through its `ConnectionLost` event and never recovers on
+its own. Handlers of that event run on the client's event dispatcher and must return immediately.
 
 ---
 
