@@ -56,7 +56,10 @@ namespace RabbitMQ.Services.Implementations
                     logger.LogWarning("[{threadId}] closing the connection because: {reason}",
                         Environment.CurrentManagedThreadId, connection.CloseReason);
 
-                    connections.Remove(connectionKey, out var _);
+                    // Remove by key and value: when several consumers recover from the same broker
+                    // restart at once, a plain remove by key would evict the fresh connection that
+                    // another one has just cached, leaking it out of the dictionary.
+                    connections.TryRemove(new KeyValuePair<string, IConnection>(connectionKey, connection));
                     await connection.DisposeAsync();
 
                     logger.LogWarning("[{threadId}] getting a new connection for '{uri}'",
